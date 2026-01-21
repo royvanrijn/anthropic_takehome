@@ -362,35 +362,29 @@ class Machine:
         }
         self.scratch_write = {}
         self.mem_write = {}
-        debug_slots = []
         for name, slots in instr.items():
             if name == "debug":
                 if not self.enable_debug:
                     continue
-                debug_slots.extend(slots)
+                for slot in slots:
+                    if slot[0] == "compare":
+                        loc, key = slot[1], slot[2]
+                        ref = self.value_trace[key]
+                        res = core.scratch[loc]
+                        assert res == ref, f"{res} != {ref} for {key} at pc={core.pc}"
+                    elif slot[0] == "vcompare":
+                        loc, keys = slot[1], slot[2]
+                        ref = [self.value_trace[key] for key in keys]
+                        res = core.scratch[loc : loc + VLEN]
+                        assert res == ref, (
+                            f"{res} != {ref} for {keys} at pc={core.pc} loc={loc}"
+                        )
                 continue
             assert len(slots) <= SLOT_LIMITS[name]
             for i, slot in enumerate(slots):
                 if self.trace is not None:
                     self.trace_slot(core, slot, name, i)
                 ENGINE_FNS[name](core, *slot)
-        if self.enable_debug and debug_slots:
-            for slot in debug_slots:
-                if slot[0] == "compare":
-                    loc, key = slot[1], slot[2]
-                    ref = self.value_trace[key]
-                    res = self.scratch_write.get(loc, core.scratch[loc])
-                    assert res == ref, f"{res} != {ref} for {key} at pc={core.pc}"
-                elif slot[0] == "vcompare":
-                    loc, keys = slot[1], slot[2]
-                    ref = [self.value_trace[key] for key in keys]
-                    res = [
-                        self.scratch_write.get(loc + vi, core.scratch[loc + vi])
-                        for vi in range(VLEN)
-                    ]
-                    assert res == ref, (
-                        f"{res} != {ref} for {keys} at pc={core.pc} loc={loc}"
-                    )
         for addr, val in self.scratch_write.items():
             core.scratch[addr] = val
         for addr, val in self.mem_write.items():
