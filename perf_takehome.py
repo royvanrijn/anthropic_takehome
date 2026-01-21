@@ -46,33 +46,10 @@ class KernelBuilder:
         return DebugInfo(scratch_map=self.scratch_debug)
 
     def build(self, slots: list[tuple[Engine, tuple]], vliw: bool = False):
-        if not vliw:
-            instrs = []
-            for engine, slot in slots:
-                instrs.append({engine: [slot]})
-            return instrs
-
+        # Simple slot packing that just uses one slot per instruction bundle
         instrs = []
-        cur = {}
-
-        def flush():
-            nonlocal cur
-            if cur:
-                instrs.append(cur)
-                cur = {}
-
         for engine, slot in slots:
-            slots_for_engine = cur.get(engine)
-            if slots_for_engine is None:
-                slots_for_engine = []
-                cur[engine] = slots_for_engine
-            if len(slots_for_engine) == SLOT_LIMITS[engine]:
-                flush()
-                slots_for_engine = []
-                cur[engine] = slots_for_engine
-            slots_for_engine.append(slot)
-
-        flush()
+            instrs.append({engine: [slot]})
         return instrs
 
     def add(self, engine, slot):
