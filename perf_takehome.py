@@ -46,10 +46,127 @@ class KernelBuilder:
         return DebugInfo(scratch_map=self.scratch_debug)
 
     def build(self, slots: list[tuple[Engine, tuple]], vliw: bool = False):
-        # Simple slot packing that just uses one slot per instruction bundle
         instrs = []
+        cur = {}
+        cur_writes = set()
+
+        def flush():
+            nonlocal cur, cur_writes
+            if cur:
+                instrs.append(cur)
+                cur = {}
+                cur_writes = set()
+
+        def range_set(start, length):
+            return set(range(start, start + length))
+
+        def slot_reads_writes(engine, slot):
+            reads = set()
+            writes = set()
+            match engine:
+                case "alu":
+                    _, dest, a1, a2 = slot
+                    reads.update([a1, a2])
+                    writes.add(dest)
+                case "valu":
+                    match slot:
+                        case ("vbroadcast", dest, src):
+                            reads.add(src)
+                            writes.update(range_set(dest, VLEN))
+                        case ("multiply_add", dest, a, b, c):
+                            reads.update(range_set(a, VLEN))
+                            reads.update(range_set(b, VLEN))
+                            reads.update(range_set(c, VLEN))
+                            writes.update(range_set(dest, VLEN))
+                        case (op, dest, a1, a2):
+                            reads.update(range_set(a1, VLEN))
+                            reads.update(range_set(a2, VLEN))
+                            writes.update(range_set(dest, VLEN))
+                        case _:
+                            pass
+                case "load":
+                    match slot:
+                        case ("load", dest, addr):
+                            reads.add(addr)
+                            writes.add(dest)
+                        case ("load_offset", dest, addr, offset):
+                            reads.add(addr + offset)
+                            writes.add(dest + offset)
+                        case ("vload", dest, addr):
+                            reads.add(addr)
+                            writes.update(range_set(dest, VLEN))
+                        case ("const", dest, _):
+                            writes.add(dest)
+                        case _:
+                            pass
+                case "store":
+                    match slot:
+                        case ("store", addr, src):
+                            reads.update([addr, src])
+                        case ("vstore", addr, src):
+                            reads.add(addr)
+                            reads.update(range_set(src, VLEN))
+                        case _:
+                            pass
+                case "flow":
+                    match slot:
+                        case ("select", dest, cond, a, b):
+                            reads.update([cond, a, b])
+                            writes.add(dest)
+                        case ("add_imm", dest, a, _):
+                            reads.add(a)
+                            writes.add(dest)
+                        case ("vselect", dest, cond, a, b):
+                            reads.update(range_set(cond, VLEN))
+                            reads.update(range_set(a, VLEN))
+                            reads.update(range_set(b, VLEN))
+                            writes.update(range_set(dest, VLEN))
+                        case ("jump_indirect", addr):
+                            reads.add(addr)
+                        case ("trace_write", val):
+                            reads.add(val)
+                        case ("coreid", dest):
+                            writes.add(dest)
+                        case _:
+                            pass
+                case "debug":
+                    match slot:
+                        case ("compare", loc, _):
+                            reads.add(loc)
+                        case ("vcompare", loc, _):
+                            reads.update(range_set(loc, VLEN))
+                        case _:
+                            pass
+            return reads, writes
+
         for engine, slot in slots:
-            instrs.append({engine: [slot]})
+            if engine == "flow":
+                flush()
+                cur = {engine: [slot]}
+                instrs.append(cur)
+                cur = {}
+                continue
+            if engine != "debug" and "debug" in cur:
+                flush()
+            if engine == "debug" and cur and "debug" not in cur:
+                flush()
+
+            reads, writes = slot_reads_writes(engine, slot)
+            if reads & cur_writes:
+                flush()
+
+            slots_for_engine = cur.get(engine)
+            if slots_for_engine is None:
+                slots_for_engine = []
+                cur[engine] = slots_for_engine
+            if len(slots_for_engine) == SLOT_LIMITS[engine]:
+                flush()
+                slots_for_engine = []
+                cur[engine] = slots_for_engine
+            slots_for_engine.append(slot)
+            cur_writes.update(writes)
+
+        flush()
         return instrs
 
     def add(self, engine, slot):
